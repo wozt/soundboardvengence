@@ -54,6 +54,8 @@ class Settings:
     auto_route: bool = True
     monitor_locally: bool = True
     discord_pattern: str = r"(?i)(WEBRTC VoiceEngine|Discord).*:input"
+    passthrough_enabled: bool = False
+    passthrough_source: str = ""
     freesound_token: str = ""
     window_width: int = 1120
     window_height: int = 760

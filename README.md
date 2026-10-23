@@ -4,14 +4,16 @@ Soundboard Linux natif en **GTK 4**, avec cache local, catalogue Freesound, effe
 
 ## Fonctionnalités
 
-- onglets Populaires, Réactions, Gaming, Cinéma, Ambiance, Favoris et Perso ;
+- onglets Populaires, Mèmes, Mèmes FR, Streamer, Prouts, Réactions, Gaming, Cinéma, Ambiance, Favoris et Perso ;
 - récupération automatique des sons les mieux notés sur Freesound (sons de moins de 30 secondes) ;
-- import de fichiers et téléchargement depuis une URL directe ;
+- import de fichiers, téléchargement depuis une URL directe et progression visible sur chaque carte ;
 - cache local et affichage de la source/licence ;
 - volume 0–150 %, effets écho, chipmunk, démon, robot et accéléré ;
 - macros séquentielles avec délai configurable ;
 - raccourcis `1` à `9` pour les neuf premiers sons de l'onglet courant ;
 - liaison PipeWire créée pendant le son puis supprimée à la fin ;
+- boutons distincts **Test** (local) et **Jouer** (Discord), activation globale de l'envoi des sons ;
+- passthrough micro activable avec choix d'un micro physique ou d'un monitor logiciel PipeWire ;
 - réglages et bibliothèque persistants au format JSON.
 
 ## Installation

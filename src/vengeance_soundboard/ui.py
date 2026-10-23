@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import uuid
 import webbrowser
+import re
 from pathlib import Path
 
 import gi
@@ -14,10 +15,24 @@ from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
 from .audio import EFFECTS, AudioEngine
 from .catalog import CatalogError, FreesoundCatalog, THEME_QUERIES, download_sound
 from .models import Macro, Sound
+from .routing import PipeWireRouter, list_capture_nodes
 from .storage import Library
 
 
-TABS = ["Populaires", "Réactions", "Gaming", "Cinéma", "Ambiance", "Favoris", "Perso", "Macros"]
+TABS = [
+    "Populaires",
+    "Mèmes",
+    "Mèmes FR",
+    "Streamer",
+    "Prouts",
+    "Réactions",
+    "Gaming",
+    "Cinéma",
+    "Ambiance",
+    "Favoris",
+    "Perso",
+    "Macros",
+]
 
 CSS = b"""
 window { background: #111318; color: #eef1f6; }
@@ -27,6 +42,8 @@ headerbar { background: #191c23; }
 .sound-card { background: #1c2028; border: 1px solid #2c323e; border-radius: 14px; padding: 12px; }
 .sound-card:hover { border-color: #7c5cff; background: #222631; }
 .play-button { background: #7357f5; color: white; border-radius: 999px; min-width: 38px; min-height: 38px; }
+.test-button { background: #303643; color: #eef1f6; }
+.route-on { background: #277a52; color: white; }
 .stop-button { background: #d84c62; color: white; }
 .accent { background: #7357f5; color: white; }
 .status-pill { background: #232833; border-radius: 999px; padding: 6px 12px; }
@@ -48,12 +65,18 @@ class SoundboardWindow(Gtk.ApplicationWindow):
         super().__init__(application=application, title="Vengeance Soundboard")
         self.library = Library()
         self.audio = AudioEngine()
+        self.passthrough_router: PipeWireRouter | None = None
+        self.download_states: dict[str, tuple[int, int]] = {}
+        self.progress_bars: dict[str, list[Gtk.ProgressBar]] = {}
+        self.source_nodes: list[str] = []
         self._macro_queue: list[Sound] = []
         self._macro_delay = 250
         self._build()
         self.set_default_size(self.library.settings.window_width, self.library.settings.window_height)
         self.connect("close-request", self._on_close)
         self.refresh_all()
+        if self.library.settings.passthrough_enabled:
+            GLib.timeout_add(600, self._restore_passthrough)
         if self.library.settings.freesound_token:
             GLib.timeout_add(700, self._initial_catalog_refresh)
 
@@ -123,6 +146,40 @@ class SoundboardWindow(Gtk.ApplicationWindow):
         toolbar.append(stop)
         root.append(toolbar)
 
+        routing = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        routing.set_margin_bottom(12)
+        routing.set_margin_start(16)
+        routing.set_margin_end(16)
+        routing.append(Gtk.Label(label="Routage audio", xalign=0))
+        send_to_discord = Gtk.ToggleButton(label="🔊 Sons → Discord")
+        send_to_discord.set_active(self.library.settings.auto_route)
+        send_to_discord.set_tooltip_text("Le bouton Jouer enverra le son à l'entrée Discord")
+        if self.library.settings.auto_route:
+            send_to_discord.add_css_class("route-on")
+        send_to_discord.connect("toggled", self._sound_route_toggled)
+        self.send_to_discord = send_to_discord
+        routing.append(send_to_discord)
+
+        source_dropdown = Gtk.DropDown()
+        source_dropdown.set_hexpand(True)
+        source_dropdown.set_tooltip_text("Micro physique ou monitor d'un périphérique logiciel")
+        source_dropdown.connect("notify::selected", self._source_changed)
+        self.source_dropdown = source_dropdown
+        routing.append(source_dropdown)
+        refresh_sources = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Rafraîchir les sources PipeWire")
+        refresh_sources.connect("clicked", lambda _button: self._reload_audio_sources())
+        routing.append(refresh_sources)
+        passthrough = Gtk.ToggleButton(label="🎙 Passthrough micro")
+        passthrough.set_tooltip_text("Relier la source choisie à l'entrée Discord")
+        passthrough.set_active(self.library.settings.passthrough_enabled)
+        if self.library.settings.passthrough_enabled:
+            passthrough.add_css_class("route-on")
+        passthrough.connect("toggled", self._passthrough_toggled)
+        self.passthrough_toggle = passthrough
+        routing.append(passthrough)
+        root.append(routing)
+        self._reload_audio_sources()
+
         self.notebook = Gtk.Notebook()
         self.notebook.set_hexpand(True)
         self.notebook.set_vexpand(True)
@@ -161,7 +218,9 @@ class SoundboardWindow(Gtk.ApplicationWindow):
         self.status = Gtk.Label(label="Prêt", xalign=0)
         self.status.set_hexpand(True)
         bottom.append(self.status)
-        self.route_status = Gtk.Label(label="PipeWire · auto" if self.library.settings.auto_route else "PipeWire · désactivé")
+        self.route_status = Gtk.Label(
+            label="Sons → Discord · actif" if self.library.settings.auto_route else "Sons → Discord · coupé"
+        )
         self.route_status.add_css_class("status-pill")
         bottom.append(self.route_status)
         root.append(bottom)
@@ -211,6 +270,7 @@ class SoundboardWindow(Gtk.ApplicationWindow):
 
     def refresh_all(self, query: str = "") -> None:
         normalized = query.strip().casefold()
+        self.progress_bars = {}
         for tab, flow in self.flows.items():
             self._clear(flow)
             if tab == "Favoris":
@@ -234,12 +294,17 @@ class SoundboardWindow(Gtk.ApplicationWindow):
     def _sound_card(self, sound: Sound, index: int) -> Gtk.Widget:
         card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         card.add_css_class("sound-card")
-        card.set_size_request(230, 132)
+        card.set_size_request(250, 164)
         top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        play = Gtk.Button(label="▶")
+        play = Gtk.Button(label="▶ Jouer")
         play.add_css_class("play-button")
         play.connect("clicked", lambda _button: self.play_sound(sound))
         top.append(play)
+        test = Gtk.Button(label="Test")
+        test.add_css_class("test-button")
+        test.set_tooltip_text("Écouter localement sans envoyer à Discord")
+        test.connect("clicked", lambda _button: self.play_sound(sound, route=False))
+        top.append(test)
         labels = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         labels.set_hexpand(True)
         title = Gtk.Label(label=sound.name, xalign=0, ellipsize=3)
@@ -255,6 +320,13 @@ class SoundboardWindow(Gtk.ApplicationWindow):
         labels.append(detail)
         top.append(labels)
         card.append(top)
+        progress = Gtk.ProgressBar(show_text=True)
+        progress.set_visible(sound.id in self.download_states)
+        self.progress_bars.setdefault(sound.id, []).append(progress)
+        if sound.id in self.download_states:
+            current, total = self.download_states[sound.id]
+            self._configure_progress(progress, current, total)
+        card.append(progress)
         bottom = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         shortcut = Gtk.Label(label=f"Touche {index + 1}" if index < 9 else "")
         shortcut.add_css_class("muted")
@@ -271,7 +343,7 @@ class SoundboardWindow(Gtk.ApplicationWindow):
             download.connect("clicked", lambda _button: self.download(sound))
             bottom.append(download)
         if sound.source_url:
-            source = Gtk.Button(icon_name="web-browser-symbolic", tooltip_text="Voir la source et la licence")
+            source = Gtk.Button(icon_name="document-open-symbolic", tooltip_text="Voir la source et la licence")
             source.add_css_class("compact")
             source.connect("clicked", lambda _button: webbrowser.open(sound.source_url))
             bottom.append(source)
@@ -299,19 +371,22 @@ class SoundboardWindow(Gtk.ApplicationWindow):
             return True
         return False
 
-    def play_sound(self, sound: Sound, finished=None) -> None:
+    def play_sound(self, sound: Sound, finished=None, route: bool | None = None) -> None:
+        should_route = self.library.settings.auto_route if route is None else route
         if sound.local_path and Path(sound.local_path).is_file():
-            self._start_playback(sound, finished)
+            self._start_playback(sound, finished, should_route)
             return
         if sound.preview_url:
-            self.download(sound, play_after=True, finished=finished)
+            self.download(sound, play_after=True, finished=finished, route=should_route)
             return
         self.show_error("Fichier introuvable", "Réimporte ce son ou vérifie son chemin.")
 
-    def _start_playback(self, sound: Sound, finished=None) -> None:
+    def _start_playback(self, sound: Sound, finished=None, route: bool | None = None) -> None:
+        should_route = self.library.settings.auto_route if route is None else route
         sound.plays += 1
         self.library.save()
-        self.status.set_text(f"Lecture · {sound.name}")
+        destination = "Discord + local" if should_route else "test local"
+        self.status.set_text(f"Lecture ({destination}) · {sound.name}")
         self.status_dot.set_from_icon_name("media-playback-start-symbolic")
 
         def ended(error):
@@ -327,7 +402,7 @@ class SoundboardWindow(Gtk.ApplicationWindow):
                 Path(sound.local_path),
                 self.library.settings.volume,
                 self.library.settings.effect,
-                self.library.settings.auto_route,
+                should_route,
                 self.library.settings.discord_pattern,
                 ended,
             )
@@ -339,19 +414,34 @@ class SoundboardWindow(Gtk.ApplicationWindow):
         self.audio.stop()
         self.status.set_text("Arrêté")
 
-    def download(self, sound: Sound, play_after: bool = False, finished=None) -> None:
+    def download(self, sound: Sound, play_after: bool = False, finished=None, route: bool | None = None) -> None:
+        if sound.id in self.download_states:
+            self.status.set_text(f"Téléchargement déjà en cours · {sound.name}")
+            return
+        self.download_states[sound.id] = (0, 0)
+        self._update_download_progress(sound.id, 0, 0)
         self.status.set_text(f"Téléchargement · {sound.name}")
+
+        last_marker = [-1]
+
+        def progress(current: int, total: int):
+            marker = int(current * 100 / total) if total else current // (512 * 1024)
+            if marker != last_marker[0]:
+                last_marker[0] = marker
+                _idle(self._update_download_progress, sound.id, current, total)
 
         def worker():
             try:
-                path = download_sound(sound, self.library.sounds_dir)
+                path = download_sound(sound, self.library.sounds_dir, progress=progress)
                 _idle(done, path, None)
             except Exception as error:
                 _idle(done, None, str(error))
 
         def done(path, error):
+            self.download_states.pop(sound.id, None)
             if error:
                 self.status.set_text("Échec du téléchargement")
+                self.refresh_all(self.search.get_text())
                 self.show_error("Téléchargement impossible", error)
                 if finished:
                     finished(error)
@@ -361,9 +451,25 @@ class SoundboardWindow(Gtk.ApplicationWindow):
             self.status.set_text(f"Téléchargé · {sound.name}")
             self.refresh_all(self.search.get_text())
             if play_after:
-                self._start_playback(sound, finished)
+                self._start_playback(sound, finished, route)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    @staticmethod
+    def _configure_progress(bar: Gtk.ProgressBar, current: int, total: int) -> None:
+        if total:
+            percent = min(100, int(current * 100 / total))
+            bar.set_fraction(min(1.0, current / total))
+            bar.set_text(f"Téléchargement {percent} %")
+        else:
+            bar.pulse()
+            bar.set_text(f"Téléchargement {current / (1024 * 1024):.1f} Mo")
+
+    def _update_download_progress(self, sound_id: str, current: int, total: int) -> None:
+        self.download_states[sound_id] = (current, total)
+        for bar in self.progress_bars.get(sound_id, []):
+            bar.set_visible(True)
+            self._configure_progress(bar, current, total)
 
     def refresh_online(self) -> None:
         token = self.library.settings.freesound_token
@@ -559,6 +665,98 @@ class SoundboardWindow(Gtk.ApplicationWindow):
         self.library.save()
         self._refresh_macros()
 
+    def _reload_audio_sources(self) -> None:
+        selected_source = self.library.settings.passthrough_source
+        self.source_nodes = list_capture_nodes()
+        if selected_source and selected_source not in self.source_nodes:
+            self.source_nodes.insert(0, selected_source)
+        model = Gtk.StringList.new(["Choisir un micro ou input logiciel…", *self.source_nodes])
+        self.source_dropdown.set_model(model)
+        selected_index = self.source_nodes.index(selected_source) + 1 if selected_source in self.source_nodes else 0
+        self.source_dropdown.set_selected(selected_index)
+
+    def _selected_audio_source(self) -> str:
+        selected = self.source_dropdown.get_selected()
+        if selected == Gtk.INVALID_LIST_POSITION or selected == 0:
+            return ""
+        index = selected - 1
+        return self.source_nodes[index] if index < len(self.source_nodes) else ""
+
+    def _source_changed(self, _dropdown, _param) -> None:
+        if not hasattr(self, "passthrough_toggle"):
+            return
+        self.library.settings.passthrough_source = self._selected_audio_source()
+        self.library.save()
+        if self.passthrough_toggle.get_active() and hasattr(self, "status"):
+            if not self._connect_passthrough(show_error=True):
+                self.passthrough_toggle.set_active(False)
+
+    def _sound_route_toggled(self, button) -> None:
+        enabled = button.get_active()
+        if enabled:
+            button.add_css_class("route-on")
+        else:
+            button.remove_css_class("route-on")
+        self.library.settings.auto_route = enabled
+        self.library.save()
+        if hasattr(self, "route_status"):
+            self.route_status.set_text("Sons → Discord · actif" if enabled else "Sons → Discord · coupé")
+
+    def _passthrough_toggled(self, button) -> None:
+        enabled = button.get_active()
+        if enabled:
+            button.add_css_class("route-on")
+        else:
+            button.remove_css_class("route-on")
+        if not enabled:
+            if self.passthrough_router:
+                self.passthrough_router.disconnect()
+                self.passthrough_router = None
+            self.library.settings.passthrough_enabled = False
+            self.library.save()
+            if hasattr(self, "status"):
+                self.status.set_text("Passthrough micro désactivé")
+            return
+        if not self._connect_passthrough(show_error=True):
+            button.set_active(False)
+
+    def _restore_passthrough(self) -> bool:
+        if self.passthrough_toggle.get_active():
+            if not self._connect_passthrough(show_error=False):
+                self.passthrough_toggle.set_active(False)
+        return False
+
+    def _connect_passthrough(self, show_error: bool) -> bool:
+        source = self._selected_audio_source()
+        if self.passthrough_router:
+            self.passthrough_router.disconnect()
+            self.passthrough_router = None
+        if not source:
+            if show_error:
+                self.show_error("Source audio manquante", "Choisis d’abord ton micro ou un monitor logiciel.")
+            return False
+        router = PipeWireRouter(
+            self.library.settings.discord_pattern,
+            rf"^{re.escape(source)}:",
+        )
+        candidates = router.candidates()
+        if not candidates:
+            if show_error:
+                self.show_error(
+                    "Routage impossible",
+                    "La source ou l’entrée Discord est absente. Rejoins un salon vocal puis rafraîchis les sources.",
+                )
+            return False
+        created = router.connect()
+        self.passthrough_router = router
+        self.library.settings.passthrough_source = source
+        self.library.settings.passthrough_enabled = True
+        self.library.save()
+        self.status.set_text(
+            f"Passthrough actif · {source} · {created or len(candidates)} lien(s)"
+        )
+        return True
+
     def show_settings(self, first_run: bool = False) -> None:
         dialog = Gtk.Dialog(title="Réglages", transient_for=self, modal=True)
         dialog.add_button("Annuler", Gtk.ResponseType.CANCEL)
@@ -596,7 +794,8 @@ class SoundboardWindow(Gtk.ApplicationWindow):
                 self.library.settings.auto_route = auto_route.get_active()
                 self.library.settings.discord_pattern = pattern.get_text().strip()
                 self.library.save()
-                self.route_status.set_text("PipeWire · auto" if auto_route.get_active() else "PipeWire · désactivé")
+                self.send_to_discord.set_active(auto_route.get_active())
+                self.route_status.set_text("Sons → Discord · actif" if auto_route.get_active() else "Sons → Discord · coupé")
                 source.destroy()
                 if self.library.settings.freesound_token and not had_token:
                     self.refresh_online()
@@ -626,6 +825,9 @@ class SoundboardWindow(Gtk.ApplicationWindow):
 
     def _on_close(self, _window) -> bool:
         self.audio.stop(notify=False)
+        if self.passthrough_router:
+            self.passthrough_router.disconnect()
+            self.passthrough_router = None
         width, height = self.get_width(), self.get_height()
         self.library.settings.window_width = width
         self.library.settings.window_height = height

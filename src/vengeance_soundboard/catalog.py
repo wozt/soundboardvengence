@@ -4,6 +4,7 @@ import hashlib
 import mimetypes
 import re
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urlparse
 
 import requests
@@ -13,11 +14,15 @@ from .models import Sound
 
 FREESOUND_SEARCH = "https://freesound.org/apiv2/search/"
 THEME_QUERIES = {
-    "Populaires": "meme OR funny OR reaction",
-    "Réactions": "reaction OR laugh OR applause OR fail",
-    "Gaming": "game OR arcade OR victory OR defeat",
-    "Cinéma": "cinematic OR dramatic OR suspense",
-    "Ambiance": "ambient OR nature OR city",
+    "Populaires": "funny",
+    "Mèmes": "meme",
+    "Mèmes FR": "meme french",
+    "Streamer": "streamer",
+    "Prouts": "fart",
+    "Réactions": "reaction",
+    "Gaming": "video game",
+    "Cinéma": "cinematic",
+    "Ambiance": "ambient",
 }
 
 
@@ -79,7 +84,12 @@ def safe_extension(url: str, content_type: str = "") -> str:
     return guessed if guessed in {".mp3", ".ogg", ".wav", ".flac", ".opus", ".m4a", ".aac"} else ".mp3"
 
 
-def download_sound(sound: Sound, sounds_dir: Path, session: requests.Session | None = None) -> Path:
+def download_sound(
+    sound: Sound,
+    sounds_dir: Path,
+    session: requests.Session | None = None,
+    progress: Callable[[int, int], None] | None = None,
+) -> Path:
     url = sound.preview_url
     if not url:
         raise CatalogError("Ce son ne fournit pas de fichier de préécoute téléchargeable.")
@@ -98,12 +108,16 @@ def download_sound(sound: Sound, sounds_dir: Path, session: requests.Session | N
             temporary = destination.with_suffix(destination.suffix + ".part")
             with temporary.open("wb") as handle:
                 total = 0
+                if progress:
+                    progress(0, declared_size)
                 for chunk in response.iter_content(64 * 1024):
                     if chunk:
                         total += len(chunk)
                         if total > 50 * 1024 * 1024:
                             raise CatalogError("Le fichier dépasse la limite de 50 Mo.")
                         handle.write(chunk)
+                        if progress:
+                            progress(total, declared_size)
             temporary.replace(destination)
             return destination
     except (requests.RequestException, OSError) as error:
