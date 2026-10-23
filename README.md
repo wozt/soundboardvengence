@@ -31,7 +31,7 @@ Sur Debian/Ubuntu, installer les équivalents `gir1.2-gtk-4.0`, `python3-gi`, `p
 PYTHONPATH=src ./run.sh
 ```
 
-Pour le catalogue, créer une clé gratuite sur <https://freesound.org/apiv2/apply/> et la coller dans les réglages. Les préécoutes sont téléchargeables sans OAuth ; la licence et l'auteur restent visibles via le bouton source.
+Pour le catalogue, créer une clé gratuite sur <https://freesound.org/apiv2/apply/>. Copier `.env.example` vers `.env`, renseigner `FREESOUND_API_KEY`, puis relancer l'application. La clé peut également être collée dans les réglages. Les préécoutes sont téléchargeables sans OAuth ; la licence et l'auteur restent visibles via le bouton source.
 
 ## Discord et PipeWire
 

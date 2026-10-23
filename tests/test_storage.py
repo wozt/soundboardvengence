@@ -1,12 +1,21 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from vengeance_soundboard.models import Macro, Sound
 from vengeance_soundboard.storage import Library
 
 
 class LibraryTests(unittest.TestCase):
+    def test_api_key_can_come_from_environment(self):
+        with tempfile.TemporaryDirectory() as raw, patch.dict(
+            "os.environ", {"FREESOUND_API_KEY": "test-secret"}, clear=False
+        ):
+            tmp_path = Path(raw)
+            library = Library(tmp_path / "config", tmp_path / "data")
+            self.assertEqual(library.settings.freesound_token, "test-secret")
+
     def test_library_persists_settings_sounds_and_macros(self):
         with tempfile.TemporaryDirectory() as raw:
             tmp_path = Path(raw)

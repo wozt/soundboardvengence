@@ -10,3 +10,4 @@ dist/
 *.kate-swp
 .mcp.json
 AGENT.MD
+.env

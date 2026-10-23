@@ -18,6 +18,28 @@ def _xdg_path(env_name: str, fallback: Path) -> Path:
     return Path(raw).expanduser() if raw else fallback
 
 
+def _freesound_key_from_env() -> str:
+    """Read the API key from the process or a project-local .env file."""
+    if value := os.environ.get("FREESOUND_API_KEY", "").strip():
+        return value
+    candidates = (Path.cwd() / ".env", Path(__file__).resolve().parents[2] / ".env")
+    for path in dict.fromkeys(candidates):
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            clean = line.strip()
+            if clean.startswith("export "):
+                clean = clean[7:].lstrip()
+            if not clean or clean.startswith("#") or "=" not in clean:
+                continue
+            key, value = clean.split("=", 1)
+            if key.strip() == "FREESOUND_API_KEY":
+                return value.strip().strip('"').strip("'")
+    return ""
+
+
 class Library:
     def __init__(self, config_dir: Path | None = None, data_dir: Path | None = None):
         home = Path.home()
@@ -56,6 +78,8 @@ class Library:
 
     def load(self) -> None:
         self.settings = Settings.from_dict(self._read_json(self.config_file, {}))
+        # An environment-provided key takes precedence over the UI configuration.
+        self.settings.freesound_token = _freesound_key_from_env() or self.settings.freesound_token
         raw = self._read_json(self.library_file, {})
         self.sounds = [Sound.from_dict(item) for item in raw.get("sounds", [])]
         self.macros = [Macro.from_dict(item) for item in raw.get("macros", [])]
