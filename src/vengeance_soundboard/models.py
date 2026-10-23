@@ -4,6 +4,10 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
+DISCORD_INPUT_PATTERN = r"(?i)^WEBRTC VoiceEngine:input_MONO$"
+LEGACY_DISCORD_INPUT_PATTERN = r"(?i)(WEBRTC VoiceEngine|Discord).*:input"
+
+
 @dataclass(slots=True)
 class Sound:
     id: str
@@ -53,7 +57,7 @@ class Settings:
     effect: str = "Aucun"
     auto_route: bool = True
     monitor_locally: bool = True
-    discord_pattern: str = r"(?i)(WEBRTC VoiceEngine|Discord).*:input"
+    discord_pattern: str = DISCORD_INPUT_PATTERN
     passthrough_enabled: bool = False
     passthrough_source: str = ""
     freesound_token: str = ""
@@ -67,6 +71,8 @@ class Settings:
         kwargs = {}
         for key in cls.__dataclass_fields__:
             kwargs[key] = value.get(key, getattr(defaults, key))
+        if kwargs["discord_pattern"] == LEGACY_DISCORD_INPUT_PATTERN:
+            kwargs["discord_pattern"] = DISCORD_INPUT_PATTERN
         return cls(**kwargs)
 
     def to_dict(self) -> dict[str, Any]:

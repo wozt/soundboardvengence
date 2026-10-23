@@ -37,7 +37,7 @@ Pour le catalogue, créer une clé gratuite sur <https://freesound.org/apiv2/app
 
 ## Discord et PipeWire
 
-Pendant un appel Discord, l'entrée de capture apparaît normalement sous un nom semblable à `WEBRTC VoiceEngine:input_MONO`. L'application détecte ce port avec une expression régulière configurable, relie les sorties `Vengeance Soundboard`, puis retire uniquement les liens qu'elle a créés à la fin de la lecture.
+Pendant un appel Discord, l'entrée de capture apparaît normalement sous le nom `WEBRTC VoiceEngine:input_MONO`. L'application cible précisément ce port, relie les sorties `Vengeance Soundboard`, puis retire uniquement les liens qu'elle a créés à la fin de la lecture. Elle évite ainsi les ports intermédiaires tels que `discord_capture:input_FL/FR`.
 
 Si Discord n'est pas détecté, lancer :
 

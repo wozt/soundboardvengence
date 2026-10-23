@@ -3,11 +3,23 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from vengeance_soundboard.models import Macro, Sound
+from vengeance_soundboard.models import DISCORD_INPUT_PATTERN, LEGACY_DISCORD_INPUT_PATTERN, Macro, Sound
 from vengeance_soundboard.storage import Library
 
 
 class LibraryTests(unittest.TestCase):
+    def test_legacy_discord_pattern_is_migrated_to_webrtc_mono(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp_path = Path(raw)
+            config = tmp_path / "config"
+            config.mkdir()
+            (config / "config.json").write_text(
+                '{"discord_pattern": "' + LEGACY_DISCORD_INPUT_PATTERN.replace("\\", "\\\\") + '"}',
+                encoding="utf-8",
+            )
+            library = Library(config, tmp_path / "data")
+            self.assertEqual(library.settings.discord_pattern, DISCORD_INPUT_PATTERN)
+
     def test_api_key_can_come_from_environment(self):
         with tempfile.TemporaryDirectory() as raw, patch.dict(
             "os.environ", {"FREESOUND_API_KEY": "test-secret"}, clear=False
