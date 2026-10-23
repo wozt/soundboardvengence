@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import re
 import threading
+import time
 import uuid
 import webbrowser
-import re
 from pathlib import Path
 
 import gi
@@ -68,6 +69,7 @@ class SoundboardWindow(Gtk.ApplicationWindow):
         self.passthrough_router: PipeWireRouter | None = None
         self.download_states: dict[str, tuple[int, int]] = {}
         self.progress_bars: dict[str, list[Gtk.ProgressBar]] = {}
+        self.cache_timers: dict[str, int] = {}
         self.source_nodes: list[str] = []
         self._macro_queue: list[Sound] = []
         self._macro_delay = 250
@@ -75,6 +77,7 @@ class SoundboardWindow(Gtk.ApplicationWindow):
         self.set_default_size(self.library.settings.window_width, self.library.settings.window_height)
         self.connect("close-request", self._on_close)
         self.refresh_all()
+        self._restore_cache_timers()
         if self.library.settings.passthrough_enabled:
             GLib.timeout_add(600, self._restore_passthrough)
         if self.library.settings.freesound_token:
@@ -100,6 +103,10 @@ class SoundboardWindow(Gtk.ApplicationWindow):
         refresh = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Actualiser le catalogue")
         refresh.connect("clicked", lambda _button: self.refresh_online())
         header.pack_start(refresh)
+
+        clear_cache = Gtk.Button(label="Vider le cache", tooltip_text="Effacer tous les sons web téléchargés")
+        clear_cache.connect("clicked", lambda _button: self.confirm_clear_cache())
+        header.pack_start(clear_cache)
 
         settings = Gtk.Button(icon_name="emblem-system-symbolic", tooltip_text="Réglages")
         settings.connect("clicked", lambda _button: self.show_settings())
@@ -342,6 +349,16 @@ class SoundboardWindow(Gtk.ApplicationWindow):
             download.add_css_class("compact")
             download.connect("clicked", lambda _button: self.download(sound))
             bottom.append(download)
+        if sound.preview_url and sound.local_path:
+            remaining = max(0, int(sound.cache_expires_at - time.time()))
+            timer_label = f"⏱ {max(1, (remaining + 59) // 60)}m" if remaining else "⏱ 5m"
+            timer = Gtk.Button(label=timer_label, tooltip_text="Supprimer ce fichier du cache dans 5 minutes")
+            timer.add_css_class("compact")
+            if remaining:
+                timer.add_css_class("stop-button")
+                timer.set_tooltip_text("Annuler la suppression programmée")
+            timer.connect("clicked", lambda _button: self.toggle_cache_timer(sound))
+            bottom.append(timer)
         if sound.source_url:
             source = Gtk.Button(icon_name="document-open-symbolic", tooltip_text="Voir la source et la licence")
             source.add_css_class("compact")
@@ -470,6 +487,92 @@ class SoundboardWindow(Gtk.ApplicationWindow):
         for bar in self.progress_bars.get(sound_id, []):
             bar.set_visible(True)
             self._configure_progress(bar, current, total)
+
+    def toggle_cache_timer(self, sound: Sound) -> None:
+        if sound.cache_expires_at > time.time():
+            self._cancel_cache_timer(sound)
+            self.status.set_text(f"Suppression annulée · {sound.name}")
+        else:
+            sound.cache_expires_at = time.time() + 300
+            self.library.save()
+            self._arm_cache_timer(sound)
+            self.status.set_text(f"Suppression dans 5 minutes · {sound.name}")
+        self.refresh_all(self.search.get_text())
+
+    def _arm_cache_timer(self, sound: Sound) -> None:
+        old_timer = self.cache_timers.pop(sound.id, 0)
+        if old_timer:
+            GLib.source_remove(old_timer)
+        remaining = max(1, int(sound.cache_expires_at - time.time()))
+        self.cache_timers[sound.id] = GLib.timeout_add_seconds(remaining, self._expire_cached_sound, sound.id)
+
+    def _cancel_cache_timer(self, sound: Sound) -> None:
+        timer = self.cache_timers.pop(sound.id, 0)
+        if timer:
+            GLib.source_remove(timer)
+        sound.cache_expires_at = 0.0
+        self.library.save()
+
+    def _expire_cached_sound(self, sound_id: str) -> bool:
+        self.cache_timers.pop(sound_id, None)
+        sound = self.library.by_id(sound_id)
+        if sound and self.library.clear_cached_sound(sound):
+            self.status.set_text(f"Cache supprimé · {sound.name}")
+            self.refresh_all(self.search.get_text())
+        return False
+
+    def _restore_cache_timers(self) -> None:
+        now = time.time()
+        expired: list[str] = []
+        changed = False
+        for sound in self.library.sounds:
+            if not sound.cache_expires_at:
+                continue
+            if not sound.preview_url or not sound.local_path:
+                sound.cache_expires_at = 0.0
+                changed = True
+            elif sound.cache_expires_at <= now:
+                expired.append(sound.id)
+            else:
+                self._arm_cache_timer(sound)
+        for sound_id in expired:
+            sound = self.library.by_id(sound_id)
+            if sound:
+                self.library.clear_cached_sound(sound)
+                changed = True
+        if changed:
+            self.library.save()
+            self.refresh_all(self.search.get_text())
+
+    def confirm_clear_cache(self) -> None:
+        cached = [sound for sound in self.library.sounds if sound.preview_url and sound.local_path]
+        if not cached:
+            self.status.set_text("Le cache est déjà vide")
+            return
+        dialog = Gtk.AlertDialog(
+            message=f"Effacer {len(cached)} son(s) du cache ?",
+            detail="Les fiches resteront disponibles et les sons pourront être retéléchargés.",
+            buttons=["Annuler", "Vider le cache"],
+            cancel_button=0,
+            default_button=0,
+        )
+
+        def answered(source, result):
+            try:
+                if source.choose_finish(result) != 1:
+                    return
+                self._macro_queue.clear()
+                self.audio.stop(notify=False)
+                for timer in self.cache_timers.values():
+                    GLib.source_remove(timer)
+                self.cache_timers.clear()
+                count = self.library.clear_cache()
+                self.status.set_text(f"Cache vidé · {count} son(s) supprimé(s)")
+                self.refresh_all(self.search.get_text())
+            except GLib.Error:
+                pass
+
+        dialog.choose(self, None, answered)
 
     def refresh_online(self) -> None:
         token = self.library.settings.freesound_token
@@ -667,6 +770,13 @@ class SoundboardWindow(Gtk.ApplicationWindow):
 
     def _reload_audio_sources(self) -> None:
         selected_source = self.library.settings.passthrough_source
+        if "webrtc voiceengine" in selected_source.casefold():
+            selected_source = ""
+            self.library.settings.passthrough_source = ""
+            self.library.settings.passthrough_enabled = False
+            self.library.save()
+            if hasattr(self, "passthrough_toggle"):
+                self.passthrough_toggle.set_active(False)
         self.source_nodes = list_capture_nodes()
         if selected_source and selected_source not in self.source_nodes:
             self.source_nodes.insert(0, selected_source)

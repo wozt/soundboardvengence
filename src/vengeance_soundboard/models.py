@@ -21,6 +21,7 @@ class Sound:
     duration: float = 0.0
     favorite: bool = False
     plays: int = 0
+    cache_expires_at: float = 0.0
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "Sound":

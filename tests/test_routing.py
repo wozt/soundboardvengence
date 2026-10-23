@@ -12,6 +12,7 @@ class RoutingTests(unittest.TestCase):
             "alsa_input.usb-microphone:capture_MONO",
             "discord_capture:monitor_FL",
             "discord_capture:monitor_FR",
+            "WEBRTC VoiceEngine:monitor_MONO",
             "Firefox:output_FL",
         ]
         self.assertEqual(

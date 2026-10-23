@@ -14,6 +14,7 @@ Soundboard Linux natif en **GTK 4**, avec cache local, catalogue Freesound, effe
 - liaison PipeWire créée pendant le son puis supprimée à la fin ;
 - boutons distincts **Test** (local) et **Jouer** (Discord), activation globale de l'envoi des sons ;
 - passthrough micro activable avec choix d'un micro physique ou d'un monitor logiciel PipeWire ;
+- suppression différée du cache par son (`⏱ 5m`) et purge globale sans toucher aux imports personnels ;
 - réglages et bibliothèque persistants au format JSON.
 
 ## Installation

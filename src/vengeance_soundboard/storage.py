@@ -110,6 +110,7 @@ class Library:
                     sound.local_path = current.local_path
                 sound.favorite = current.favorite
                 sound.plays = current.plays
+                sound.cache_expires_at = current.cache_expires_at
                 self.sounds[index] = sound
                 break
         else:
@@ -125,6 +126,30 @@ class Library:
         for macro in self.macros:
             macro.sound_ids = [item for item in macro.sound_ids if item != sound.id]
         self.save()
+
+    def clear_cached_sound(self, sound: Sound) -> bool:
+        """Remove a recoverable downloaded file while keeping its catalogue entry."""
+        if not sound.preview_url or not sound.local_path:
+            return False
+        local = Path(sound.local_path)
+        try:
+            is_managed = self.sounds_dir.resolve() in local.resolve().parents
+        except OSError:
+            is_managed = False
+        if not is_managed:
+            return False
+        local.unlink(missing_ok=True)
+        sound.local_path = ""
+        sound.cache_expires_at = 0.0
+        self.save()
+        return True
+
+    def clear_cache(self) -> int:
+        cleared = 0
+        for sound in self.sounds:
+            if self.clear_cached_sound(sound):
+                cleared += 1
+        return cleared
 
     def by_id(self, sound_id: str) -> Sound | None:
         return next((item for item in self.sounds if item.id == sound_id), None)

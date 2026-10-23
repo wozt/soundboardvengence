@@ -26,6 +26,9 @@ def list_capture_nodes() -> list[str]:
     nodes: list[str] = []
     for port in list_ports("-o"):
         lowered = port.casefold()
+        if "webrtc voiceengine" in lowered:
+            # Discord's own monitor would create a feedback loop into its input.
+            continue
         if not any(marker in lowered for marker in ("alsa_input", "bluez_input", ":capture_", ":monitor_")):
             continue
         node = port.rsplit(":", 1)[0]

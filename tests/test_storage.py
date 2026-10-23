@@ -49,7 +49,14 @@ class LibraryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             tmp_path = Path(raw)
             library = Library(tmp_path / "config", tmp_path / "data")
-            old = Sound("remote-1", "Old", local_path="/tmp/audio.mp3", favorite=True, plays=3)
+            old = Sound(
+                "remote-1",
+                "Old",
+                local_path="/tmp/audio.mp3",
+                favorite=True,
+                plays=3,
+                cache_expires_at=123,
+            )
             library.sounds.append(old)
             updated = Sound("remote-1", "New", preview_url="https://example.test/audio.mp3")
             library.upsert(updated)
@@ -57,3 +64,30 @@ class LibraryTests(unittest.TestCase):
             self.assertEqual(library.sounds[0].local_path, "/tmp/audio.mp3")
             self.assertTrue(library.sounds[0].favorite)
             self.assertEqual(library.sounds[0].plays, 3)
+            self.assertEqual(library.sounds[0].cache_expires_at, 123)
+
+    def test_clear_cache_keeps_catalogue_and_personal_import(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp_path = Path(raw)
+            library = Library(tmp_path / "config", tmp_path / "data")
+            cached_file = library.sounds_dir / "remote.mp3"
+            cached_file.write_bytes(b"remote")
+            personal_source = tmp_path / "personal.wav"
+            personal_source.write_bytes(b"personal")
+            remote = Sound(
+                "remote-1",
+                "Remote",
+                local_path=str(cached_file),
+                preview_url="https://example.test/remote.mp3",
+                cache_expires_at=123,
+            )
+            personal = library.add_local(personal_source)
+            library.sounds.append(remote)
+            library.save()
+
+            self.assertEqual(library.clear_cache(), 1)
+            self.assertFalse(cached_file.exists())
+            self.assertEqual(remote.local_path, "")
+            self.assertEqual(remote.cache_expires_at, 0)
+            self.assertTrue(Path(personal.local_path).exists())
+            self.assertIs(library.by_id("remote-1"), remote)
